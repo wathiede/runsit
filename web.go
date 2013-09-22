@@ -23,6 +23,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strconv"
 	"strings"
@@ -105,16 +106,12 @@ func taskView(w http.ResponseWriter, r *http.Request) {
 }
 
 func runWebServer(ln net.Listener) {
-	mux := http.NewServeMux()
 	// TODO: wrap mux in auth handler, making it available only to
 	// TCP connections from localhost and owned by the uid/gid of
 	// the running process.
-	mux.HandleFunc("/", taskList)
-	mux.HandleFunc("/task/", taskView)
-	s := &http.Server{
-		Handler: mux,
-	}
-	err := s.Serve(ln)
+	http.HandleFunc("/", taskList)
+	http.HandleFunc("/task/", taskView)
+	err := http.Serve(ln, nil)
 	if err != nil {
 		logger.Fatalf("webserver exiting: %v", err)
 	}

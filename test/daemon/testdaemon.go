@@ -17,8 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -27,12 +31,14 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 var (
-	port  = flag.Int("port", 8000, "port")
-	crash = flag.Bool("crash", false, "crash on start")
+	port    = flag.Int("port", 8000, "port")
+	crash   = flag.Bool("crash", false, "crash on start")
+	verbose = flag.Bool("verbose", false, "generate 512M of stderr and stdout then crash")
 )
 
 func crashHandler(w http.ResponseWriter, r *http.Request) {
@@ -70,10 +76,58 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func logNoise() {
-	for {
-		log.Printf("some log noise")
-		time.Sleep(1 * time.Second)
+type countWriter struct {
+	count int
+}
+
+func (cw *countWriter) Write(p []byte) (n int, err error) {
+	n = len(p)
+	cw.count += n
+	return
+}
+
+func logNoise(verbose bool) {
+	if verbose {
+		const (
+			buSize   = 16 << 10
+			maxBytes = 128 << 20
+		)
+
+		buf := make([]byte, buSize)
+		_, err := io.ReadFull(rand.Reader, buf)
+		if err != nil {
+			log.Fatal("Failed to read random data:", err)
+		}
+
+		wg := new(sync.WaitGroup)
+		output := func(w io.Writer) {
+			cw := new(countWriter)
+			// Buffering stdio/stderr gives ~10x speedup.
+			w = bufio.NewWriter(w)
+			// Write to the passed in w and a countWriter so we can count how
+			// many bytes have been output.
+			w = io.MultiWriter(cw, w)
+			// Create some non-repeating multliline text output with sane
+			// line lengths.
+			w = hex.Dumper(w)
+			for cw.count < maxBytes {
+				_, err := w.Write(buf)
+				if err != nil {
+					log.Fatal("Failed to write random data:", err)
+				}
+			}
+			wg.Done()
+		}
+		wg.Add(2)
+		go output(os.Stdout)
+		go output(os.Stderr)
+		wg.Wait()
+		os.Exit(1)
+	} else {
+		for {
+			log.Printf("some log noise")
+			time.Sleep(1 * time.Second)
+		}
 	}
 }
 
@@ -96,7 +150,7 @@ func main() {
 
 	fmt.Fprintf(os.Stdout, "Hello on stdout; listening on port %d\n", *port)
 	fmt.Fprintf(os.Stderr, "Hello on stderr\n")
-	go logNoise()
+	go logNoise(*verbose)
 
 	http.HandleFunc("/crash", crashHandler)
 	http.HandleFunc("/", statusHandler)
